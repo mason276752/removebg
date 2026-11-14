@@ -9,6 +9,7 @@
 - **AI 去背**：BiRefNet_lite 找出主體，人像、商品、動物、物件都可以，輸出透明背景的 PNG
 - **手動修補**：左邊原圖疊紅色遮罩、右邊即時預覽；「保留」「去除」兩種筆刷，⌘Z 復原，也能一鍵回到 AI 結果
 - **批次處理**：一次放很多張（選檔、拖曳、貼上都可以），依序去背，可以打包下載
+- **iPhone 的 HEIC／HEIF 照片**：Safari 直接解碼；其他瀏覽器遇到時才載入 HEIF 解碼器（約 800 KB，只下載一次），同樣在本機運算
 - **WebGPU 加速**：有 WebGPU 用 1024 精細版（約 2 秒一張），沒有就用 512 版跑 CPU（約 4 秒）
 
 ## 和 ZIP 編輯器串接
@@ -48,3 +49,4 @@ npm run build      # 輸出到 dist/
 
 - 模型：BiRefNet_lite（MIT）。BiRefNet_lite 的訓練資料包含 DIS5K，該資料集本身有商用限制，商業用途請自行評估
 - [onnxruntime-web](https://github.com/microsoft/onnxruntime)（MIT）、[Vue](https://vuejs.org/)（MIT）
+- [heic-to](https://github.com/hoppergee/heic-to)（內含 [libheif](https://github.com/strukturag/libheif)，LGPL-3.0）：未修改，打包成獨立的檔案，只在瀏覽器無法原生解碼 HEIF 時載入；授權全文隨網站發布在 `heic-to.LICENSE`

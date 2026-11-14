@@ -4,6 +4,7 @@
 //   * 推論：onnxruntime-web，在 Web Worker 裡跑（見 rmbg/）
 //   * 修補：左邊塗遮罩、右邊即時預覽（移植自 rust-ai-webtool，見 mask/）
 //   * 串接：ZIP 編輯器可以把圖片傳過來，結果打包成 ZIP 傳回去（見 bridge.js）
+//   * HEIC／HEIF：瀏覽器解不開的先轉成 PNG（見 heif.js）
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from './components/Icon.vue'
 import MaskEditor from './components/MaskEditor.vue'
@@ -12,6 +13,7 @@ import { makeZip } from './zip.js'
 import { fmtBytes, saveBlob, timeStamp, uniqueName } from './util.js'
 import { MODELS } from './rmbg/models.js'
 import { cancelAll, detectBackend, maskFor } from './rmbg/index.js'
+import { ensureDecodable } from './heif.js'
 
 // ---------- toast ----------
 const toastMsg = ref('')
@@ -46,7 +48,7 @@ const doneItems = computed(() => items.value.filter((i) => i.status === 'done'))
 const fileInput = ref(null)
 const editor = ref(null)
 
-const isImage = (f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif|svg|ico)$/i.test(f.name)
+const isImage = (f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif|svg|ico|heic|heif|hif)$/i.test(f.name)
 
 function addFiles(list, from) {
   const files = [...list]
@@ -76,7 +78,29 @@ function addFiles(list, from) {
   const skipped = files.length - images.length
   const who = from === 'zipeditor' ? '從 ZIP 編輯器收到' : '已加入'
   toast(`${who} ${images.length} 張圖片${skipped ? `（略過 ${skipped} 個不是圖片的）` : ''}`)
+  for (const item of items.value.slice(-added.length)) prepare(item)
   pump()
+}
+
+// 瀏覽器解不開的 HEIF 一加入就依序轉成 PNG，不等去背的佇列：縮圖早點出來，
+// 之後的解碼、修補畫面都用轉好的檔。
+const prepared = new Map() // id → Promise
+let preparing = Promise.resolve()
+function prepare(item) {
+  let p = prepared.get(item.id)
+  if (!p) {
+    p = preparing.then(async () => {
+      if (!items.value.includes(item)) return
+      const file = await ensureDecodable(item.file)
+      if (file === item.file || !items.value.includes(item)) return
+      URL.revokeObjectURL(item.srcUrl)
+      item.file = markRaw(file)
+      item.srcUrl = URL.createObjectURL(file)
+    })
+    preparing = p.catch(() => prepared.delete(item.id)) // 失敗了（例如解碼器沒載到），重試時再轉一次
+    prepared.set(item.id, p)
+  }
+  return p
 }
 
 function setResult(item, blob) {
@@ -89,6 +113,7 @@ async function removeItem(item) {
   if (item.status === 'running') cancelAll() // 讓 pump 裡那張以「已取消」結束
   if (item.result) URL.revokeObjectURL(item.result.url)
   URL.revokeObjectURL(item.srcUrl)
+  prepared.delete(item.id)
   const i = items.value.indexOf(item)
   items.value.splice(i, 1)
   if (selectedId.value === item.id) selectedId.value = items.value[Math.min(i, items.value.length - 1)]?.id ?? null
@@ -118,7 +143,7 @@ async function bitmapOf(file) {
       await img.decode()
       return await createImageBitmap(img)
     } catch {
-      throw new Error('瀏覽器解不開這個格式（HEIC 請先用 Paste → JPG 轉檔）')
+      throw new Error('瀏覽器解不開這個格式')
     } finally {
       URL.revokeObjectURL(url)
     }
@@ -173,6 +198,7 @@ async function process(item) {
     item.progress = progress
   }
   try {
+    await prepare(item)
     let bitmap = await bitmapOf(item.file)
     item.width = bitmap.width
     item.height = bitmap.height
@@ -465,7 +491,7 @@ onBeforeUnmount(() => {
       <span>{{ toastMsg }}</span>
     </div>
 
-    <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPick" />
+    <input ref="fileInput" type="file" accept="image/*,.heic,.heif" multiple hidden @change="onPick" />
   </div>
 </template>
 
