@@ -17,7 +17,8 @@
 工具都放在 `mason276752.github.io` 底下，屬於同一個 origin，可以用 [BroadcastChannel](https://developer.mozilla.org/docs/Web/API/BroadcastChannel) 互傳檔案：
 
 - 在 [ZIP 編輯器](https://mason276752.github.io/zipeditor/) 勾選圖片（或在預覽裡）按「去背」，檔案會傳過來（`{type:'files'}`）
-- 這裡按「傳到 ZIP 編輯器」，結果打包成 ZIP 傳回去（`{type:'zip'}`），可以合併到目前的資料夾
+- 從 ZIP 編輯器（或經過其他工具轉來）的檔案記得來源：去背好、之後每次修補，結果都會自動傳回（`{type:'update'}`），放在 ZIP 裡原檔旁邊；同一份結果的新版本會取代舊的（同一份結果連續修改時會防抖、節流：停手 0.8 秒才傳最新版，一直改也至少每 3 秒傳一次）
+- 這裡按「傳到 ZIP 編輯器」，把全部結果打包成 ZIP 傳過去（`{type:'zip'}`），可以合併到目前的資料夾（自己加進來的檔案用這個）
 - 按「傳到圖片放大」，去背的圖直接交給[圖片放大](https://mason276752.github.io/upscale/)，透明背景會保留；圖片放大那邊也能把結果傳過來去背
 - 按「傳到 Paste → JPG」，交給 [Paste → JPG](https://mason276752.github.io/paste2jpg/) 轉檔；選 WebP 會保留透明，檔案比 PNG 小很多
 

@@ -3,12 +3,12 @@
 //   * 模型：有 WebGPU 用 1024 精細版、沒有用 512 版跑 CPU（原因見 rmbg/models.js）
 //   * 推論：onnxruntime-web，在 Web Worker 裡跑（見 rmbg/）
 //   * 修補：左邊塗遮罩、右邊即時預覽（移植自 rust-ai-webtool，見 mask/）
-//   * 串接：ZIP 編輯器可以把圖片傳過來，結果打包成 ZIP 傳回去；也能直接傳到圖片放大、Paste → JPG（見 bridge.js）
+//   * 串接：別的工具傳來的圖，去背好、之後每次修補都自動傳回來源；也能直接傳到圖片放大、Paste → JPG（見 bridge.js）
 //   * HEIC／HEIF：瀏覽器解不開的先轉成 PNG（見 heif.js）
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from './components/Icon.vue'
 import MaskEditor from './components/MaskEditor.vue'
-import { bridgeSupported, listen, sendFiles, sendToEditor, toolLabel } from './bridge.js'
+import { bridgeSupported, listen, sendFiles, sendResult, sendToEditor, toolLabel } from './bridge.js'
 import { makeZip } from './zip.js'
 import { fmtBytes, saveBlob, timeStamp, uniqueName } from './util.js'
 import { MODELS } from './rmbg/models.js'
@@ -50,16 +50,20 @@ const editor = ref(null)
 
 const isImage = (f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif|svg|ico|heic|heif|hif)$/i.test(f.name)
 
-function addFiles(list, from) {
+// origins[i]：files[i] 從哪個工具來（見 bridge.js），去背的結果會自動傳回去。
+function addFiles(list, from, origins = []) {
   const files = [...list]
-  const images = files.filter(isImage)
+  const picked = files.map((f, i) => [f, origins[i] ?? null]).filter(([f]) => isImage(f))
+  const images = picked.map(([f]) => f)
   if (!images.length) {
     if (files.length) toast('沒有可以處理的圖片')
     return
   }
-  const added = images.map((f) => ({
+  const added = picked.map(([f, origin]) => ({
     id: crypto.randomUUID(),
     file: markRaw(f),
+    origin: origin && markRaw(origin), // 不要變成 Proxy：轉傳給別的工具時要能 postMessage
+    returned: '', // '' | 'ok' | 'failed'
     name: f.name || 'image.png',
     srcUrl: URL.createObjectURL(f),
     width: 0,
@@ -77,7 +81,8 @@ function addFiles(list, from) {
   if (!selected.value) selectedId.value = added[0].id
   const skipped = files.length - images.length
   const who = from ? `從${toolLabel(from)}收到` : '已加入'
-  toast(`${who} ${images.length} 張圖片${skipped ? `（略過 ${skipped} 個不是圖片的）` : ''}`)
+  const back = picked.find(([, o]) => o)?.[1]
+  toast(`${who} ${images.length} 張圖片${skipped ? `（略過 ${skipped} 個不是圖片的）` : ''}${back ? `，去背、修補後會自動傳回${toolLabel(back.app)}` : ''}`)
   for (const item of items.value.slice(-added.length)) prepare(item)
   pump()
 }
@@ -106,6 +111,15 @@ function prepare(item) {
 function setResult(item, blob) {
   if (item.result) URL.revokeObjectURL(item.result.url)
   item.result = { blob: markRaw(blob), url: URL.createObjectURL(blob) }
+  returnResult(item)
+}
+
+/** 從別的工具來的圖：去背好、之後每次修補存檔，都把結果傳回來源。 */
+async function returnResult(item) {
+  if (!item.origin) return
+  const { blob } = item.result
+  const ok = await sendResult(item.origin, item.id, new File([blob], outName(item), { type: 'image/png' }))
+  if (item.result?.blob === blob) item.returned = ok ? 'ok' : 'failed'
 }
 
 async function removeItem(item) {
@@ -193,6 +207,7 @@ async function process(item) {
   item.stage = ''
   item.progress = 0
   item.error = ''
+  item.returned = ''
   const onStage = (stage, progress = 0) => {
     item.stage = stage
     item.progress = progress
@@ -310,13 +325,16 @@ async function sendAll() {
   reportSend(res, 'zipeditor')
 }
 
-/** 結果直接交給另一個工具（例如去背後放大），不經過 ZIP 編輯器。 */
+/** 結果直接交給另一個工具（例如去背後放大），不經過 ZIP 編輯器。圖原本的來源跟著傳過去，那邊的結果也會回到那裡。 */
 async function sendTo(name, sentNote) {
   if (sending.value || !doneItems.value.length) return
   sending.value = true
   const res = await sendFiles(name, async () => {
     await flushEdits()
-    return zipList().map((f) => new File([f.blob], f.name, { type: 'image/png' }))
+    return {
+      files: zipList().map((f) => new File([f.blob], f.name, { type: 'image/png' })),
+      origins: doneItems.value.map((i) => i.origin),
+    }
   })
   sending.value = false
   reportSend(res, name, sentNote)
@@ -326,8 +344,13 @@ const statusText = (i) =>
   i.status === 'queued' ? '等待中'
     : i.status === 'running'
       ? (i.stage === 'download' ? `下載模型 ${Math.round(i.progress * 100)}%` : i.stage === 'run' ? '去背中…' : '準備中…')
-      : i.status === 'done' ? `${i.width}×${i.height} · ${fmtBytes(i.result.blob.size)}`
+      : i.status === 'done' ? `${i.width}×${i.height} · ${fmtBytes(i.result.blob.size)}${returnNote(i)}`
         : i.error
+
+const returnNote = (i) =>
+  !i.origin || !i.returned ? ''
+    : i.returned === 'ok' ? ` · 已傳回${toolLabel(i.origin.app)}`
+      : ` · ${toolLabel(i.origin.app)}已關閉，沒傳回`
 
 // ---------- 輸入：選檔、拖放、貼上 ----------
 function pick() {
@@ -389,7 +412,7 @@ onMounted(async () => {
   window.addEventListener('dragleave', onDragLeave)
   window.addEventListener('drop', onDrop)
   window.addEventListener('beforeunload', onBeforeUnload)
-  stopListening = listen((files, from) => addFiles(files, from || 'zipeditor'))
+  stopListening = listen((files, from, origins) => addFiles(files, from || 'zipeditor', origins))
   backend.value = await detectBackend()
   await nextTick()
   pump()
