@@ -3,12 +3,12 @@
 //   * 模型：有 WebGPU 用 1024 精細版、沒有用 512 版跑 CPU（原因見 rmbg/models.js）
 //   * 推論：onnxruntime-web，在 Web Worker 裡跑（見 rmbg/）
 //   * 修補：左邊塗遮罩、右邊即時預覽（移植自 rust-ai-webtool，見 mask/）
-//   * 串接：ZIP 編輯器可以把圖片傳過來，結果打包成 ZIP 傳回去（見 bridge.js）
+//   * 串接：ZIP 編輯器可以把圖片傳過來，結果打包成 ZIP 傳回去；也能直接傳到圖片放大、Paste → JPG（見 bridge.js）
 //   * HEIC／HEIF：瀏覽器解不開的先轉成 PNG（見 heif.js）
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from './components/Icon.vue'
 import MaskEditor from './components/MaskEditor.vue'
-import { bridgeSupported, listen, sendToEditor } from './bridge.js'
+import { bridgeSupported, listen, sendFiles, sendToEditor, toolLabel } from './bridge.js'
 import { makeZip } from './zip.js'
 import { fmtBytes, saveBlob, timeStamp, uniqueName } from './util.js'
 import { MODELS } from './rmbg/models.js'
@@ -76,7 +76,7 @@ function addFiles(list, from) {
   items.value.push(...added)
   if (!selected.value) selectedId.value = added[0].id
   const skipped = files.length - images.length
-  const who = from === 'zipeditor' ? '從 ZIP 編輯器收到' : '已加入'
+  const who = from ? `從${toolLabel(from)}收到` : '已加入'
   toast(`${who} ${images.length} 張圖片${skipped ? `（略過 ${skipped} 個不是圖片的）` : ''}`)
   for (const item of items.value.slice(-added.length)) prepare(item)
   pump()
@@ -291,6 +291,13 @@ async function downloadAll() {
 }
 
 const sending = ref(false)
+function reportSend(res, name, sentNote = '') {
+  const label = toolLabel(name)
+  if (res === 'sent') toast(`已把 ${doneItems.value.length} 張去背圖傳到${label}${sentNote}`)
+  else if (res === 'blocked') toast(`瀏覽器擋下了新分頁，請先開啟${label}再傳送`)
+  else toast(`${label}沒有回應，請再試一次`)
+}
+
 async function sendAll() {
   if (sending.value || !doneItems.value.length) return
   sending.value = true
@@ -300,9 +307,19 @@ async function sendAll() {
     return new File([await makeZip(zipList())], zipName(), { type: 'application/zip' })
   })
   sending.value = false
-  if (res === 'sent') toast(`已把 ${doneItems.value.length} 張去背圖傳到 ZIP 編輯器`)
-  else if (res === 'blocked') toast('瀏覽器擋下了新分頁，請先開啟 ZIP 編輯器再傳送')
-  else toast('ZIP 編輯器沒有回應，請再試一次')
+  reportSend(res, 'zipeditor')
+}
+
+/** 結果直接交給另一個工具（例如去背後放大），不經過 ZIP 編輯器。 */
+async function sendTo(name, sentNote) {
+  if (sending.value || !doneItems.value.length) return
+  sending.value = true
+  const res = await sendFiles(name, async () => {
+    await flushEdits()
+    return zipList().map((f) => new File([f.blob], f.name, { type: 'image/png' }))
+  })
+  sending.value = false
+  reportSend(res, name, sentNote)
 }
 
 const statusText = (i) =>
@@ -405,7 +422,7 @@ onBeforeUnmount(() => {
       <section class="start panel">
         <Icon name="image" class="hero" />
         <strong>把圖片拖進來、貼上，或選擇檔案</strong>
-        <span>PNG、JPG、WebP、AVIF……一次可以放很多張，放進來就開始去背</span>
+        <span>PNG、JPG、WebP、HEIC、AVIF……一次可以放很多張，放進來就開始去背</span>
         <div class="start-btns">
           <button type="button" class="btn primary" @click="pick"><Icon name="upload" />選擇圖片</button>
         </div>
@@ -416,8 +433,8 @@ onBeforeUnmount(() => {
         <ul>
           <li><strong>AI 去背</strong>：用 BiRefNet 模型找出主體，人像、商品、動物、物件都可以，輸出透明背景的 PNG。</li>
           <li><strong>手動修補</strong>：AI 漏掉的髮絲、多留的背景，用「保留」「去除」筆刷塗一下，右邊即時看到結果。</li>
-          <li><strong>批次處理</strong>：一次放很多張，依序去背，可以打包下載。</li>
-          <li><strong>串接 ZIP 編輯器</strong>：在 <a href="../zipeditor/">ZIP 編輯器</a>勾選圖片就能傳過來，去背後再按「傳到 ZIP 編輯器」放回去。</li>
+          <li><strong>批次處理</strong>：一次放很多張，依序去背，可以打包下載。iPhone 的 HEIC 照片也能直接放。</li>
+          <li><strong>串接其他工具</strong>：在 <a href="../zipeditor/">ZIP 編輯器</a>勾選圖片就能傳過來，去背後再按「傳到 ZIP 編輯器」放回去；也可以直接傳到<a href="../upscale/">圖片放大</a>，或交給 <a href="../paste2jpg/">Paste → JPG</a> 轉成保留透明的 WebP。</li>
           <li><strong>不上傳</strong>：模型下載到瀏覽器裡執行（第一次約 100MB，之後從快取讀）。有 WebGPU 的瀏覽器（Chrome、Edge、新版 Safari）用 1024 精細版、幾秒一張；其他用 512 版跑 CPU。</li>
         </ul>
       </section>
@@ -454,6 +471,16 @@ onBeforeUnmount(() => {
         <div class="actions">
           <span class="grow muted">{{ doneItems.length }} / {{ items.length }} 張完成</span>
           <button v-if="doneItems.length > 1" type="button" class="btn" @click="downloadAll"><Icon name="download" />打包下載</button>
+          <template v-if="bridgeSupported">
+            <button type="button" class="btn" :disabled="sending || !doneItems.length"
+                    title="轉成 WebP 會保留透明，檔案小很多" @click="sendTo('paste2jpg', '，選 WebP 會保留透明')">
+              <Icon name="send" />傳到 Paste → JPG
+            </button>
+            <button type="button" class="btn" :disabled="sending || !doneItems.length"
+                    title="去背的圖直接拿去放大，透明背景會保留" @click="sendTo('upscale')">
+              <Icon name="send" />傳到圖片放大
+            </button>
+          </template>
           <button v-if="bridgeSupported" type="button" class="btn primary" :disabled="sending || !doneItems.length" @click="sendAll">
             <Icon name="send" />傳到 ZIP 編輯器
           </button>

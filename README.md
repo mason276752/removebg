@@ -12,12 +12,14 @@
 - **iPhone 的 HEIC／HEIF 照片**：Safari 直接解碼；其他瀏覽器遇到時才載入 HEIF 解碼器（約 800 KB，只下載一次），同樣在本機運算
 - **WebGPU 加速**：有 WebGPU 用 1024 精細版（約 2 秒一張），沒有就用 512 版跑 CPU（約 4 秒）
 
-## 和 ZIP 編輯器串接
+## 和其他工具串接
 
 工具都放在 `mason276752.github.io` 底下，屬於同一個 origin，可以用 [BroadcastChannel](https://developer.mozilla.org/docs/Web/API/BroadcastChannel) 互傳檔案：
 
 - 在 [ZIP 編輯器](https://mason276752.github.io/zipeditor/) 勾選圖片（或在預覽裡）按「去背」，檔案會傳過來（`{type:'files'}`）
 - 這裡按「傳到 ZIP 編輯器」，結果打包成 ZIP 傳回去（`{type:'zip'}`），可以合併到目前的資料夾
+- 按「傳到圖片放大」，去背的圖直接交給[圖片放大](https://mason276752.github.io/upscale/)，透明背景會保留；圖片放大那邊也能把結果傳過來去背
+- 按「傳到 Paste → JPG」，交給 [Paste → JPG](https://mason276752.github.io/paste2jpg/) 轉檔；選 WebP 會保留透明，檔案比 PNG 小很多
 
 對方的分頁沒開的話會自動開新分頁。協定見 [`src/bridge.js`](src/bridge.js)，與 zipeditor、paste2jpg 相同。
 
